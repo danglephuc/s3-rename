@@ -2,7 +2,14 @@ const path = require('path');
 const lineReader = require('line-reader');
 require('dotenv').config();
 var AWS = require('aws-sdk');
-var Queue = require('better-queue');
+var kue = require('kue')
+  , queue = kue.createQueue({
+    prefix: 'kue_q',
+    redis: {
+      port: process.env.REDIS_PORT || 6379,
+      host: process.env.REDIS_HOST || 'localhost',
+    },
+  });
 
 // Create an S3 client
 var s3 = new AWS.S3();
@@ -13,8 +20,8 @@ var count = 0;
 var countProcess = 0;
 var countDone = 0;
 
-var q = new Queue(function (input, cb) {
-    let files = input.split(',');
+queue.process('rename', 10, function(job, done){
+    let files = job.data.line.split(',');
     count++;
 
     let srcFile = imageFolder + '/' + files[0];
@@ -30,18 +37,26 @@ var q = new Queue(function (input, cb) {
     countProcess++;
     s3.copyObject(params, function(err, data) {
         countDone++;
-        // if(countDone % 100 == 0) {
+        if(countDone % 100 == 0) {
             console.log("Count: " + countDone);
-        // }
+        }
         if (err)
             console.log("Error: " + srcFile);
         // else
         //     console.log("Successfully uploaded data to " + bucketName + "/" + dstFile);
+        done();
     });
-   
-    cb(null, result);
-  }, {concurrent: 20});
+  });
 
 lineReader.eachLine(path.resolve(__dirname, process.env.UPDATE_FILE), function(line) {
-    q.push(line);
+    queue.create('rename', {
+        line
+      })
+      .removeOnComplete(true)
+      .save(function (err) {
+        if (err)
+          logger.error(
+            `Error create job: ${line}`
+          );
+      });
 });
